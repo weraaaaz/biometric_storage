@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.io.File
@@ -129,8 +130,8 @@ class BiometricStorageFile(
     @Synchronized
     fun writeFile(cipher: Cipher?, content: String) {
         logToAndroid(Level.DEBUG, "🧩writeFile")
-        val useCipher = cipher ?: cipherForEncrypt()
         try {
+            val useCipher = cipher ?: cipherForEncrypt()
             val encrypted = cryptographyManager.encryptData(content, useCipher)
             fileV2.writeBytes(encrypted.encryptedPayload)
             logger.debug { "Successfully written ${encrypted.encryptedPayload.size} bytes." }
@@ -140,17 +141,39 @@ class BiometricStorageFile(
             // Error occurred opening file for writing.
             logger.error(ex) { "Error while writing encrypted file $fileV2" }
             throw ex
+        } catch (ex: KeyPermanentlyInvalidatedException) {
+            logger.error(ex) {
+                "KeyPermanentlyInvalidatedException while encrypting $fileV2 — triggering migration"
+            }
+            logToAndroid(
+                Level.DEBUG,
+                "🧩KeyPermanentlyInvalidatedException while encrypting $fileV2 — triggering migration"
+            )
+            safeDeleteKeyAndFile()
+            throw MigrationRequiredException(ex)
         }
     }
 
 
     @Synchronized
     fun readFile(cipher: Cipher?): String? {
-        val useCipher = cipher ?: cipherForDecrypt()
-
         if (!fileV2.exists()) {
             logger.debug { "File $fileV2 does not exist. returning null." }
             return null
+        }
+
+        val useCipher = try {
+            cipher ?: cipherForDecrypt()
+        } catch (ex: KeyPermanentlyInvalidatedException) {
+            logger.error(ex) {
+                "KeyPermanentlyInvalidatedException while opening cipher for $fileV2 — biometric enrollment changed, triggering migration"
+            }
+            logToAndroid(
+                Level.DEBUG,
+                "🧩KeyPermanentlyInvalidatedException while opening cipher for $fileV2 — triggering migration"
+            )
+            safeDeleteKeyAndFile()
+            throw MigrationRequiredException(ex)
         }
 
         if (useCipher == null) {
@@ -185,6 +208,16 @@ class BiometricStorageFile(
             )
             safeDeleteKeyAndFile()
             setSandboxFlag()
+            throw MigrationRequiredException(ex)
+        } catch (ex: KeyPermanentlyInvalidatedException) {
+            logger.error(ex) {
+                "KeyPermanentlyInvalidatedException while decrypting $fileV2 — biometric enrollment changed, triggering migration"
+            }
+            logToAndroid(
+                Level.DEBUG,
+                "🧩KeyPermanentlyInvalidatedException while decrypting $fileV2 — triggering migration"
+            )
+            safeDeleteKeyAndFile()
             throw MigrationRequiredException(ex)
         } catch (ex: Exception) {
             //TODO what about wrong finger or face
