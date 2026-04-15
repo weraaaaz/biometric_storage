@@ -183,11 +183,12 @@ class BiometricStoragePlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
                 } else try {
                     cipherForMode()
                 } catch (e: KeyPermanentlyInvalidatedException) {
-                    // TODO should we communicate this to the caller?
-                    logger.warn(e) { "Key was invalidated. removing previous storage and recreating." }
+                    logger.warn(e) {
+                        "Key was invalidated (e.g. biometric enrollment changed). " +
+                            "Removing storage and signaling migration."
+                    }
                     deleteFile()
-                    // if deleting fails, simply throw the second time around.
-                    cipherForMode()
+                    throw MigrationRequiredException(e)
                 }
 
                 if (cipher == null) {
@@ -201,9 +202,16 @@ class BiometricStoragePlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
                 }
 
                 val promptInfo = getAndroidPromptInfo()
-                authenticate(cipher, promptInfo, options, {
-                    cb(cipher)
-                }, onError = resultError)
+                authenticate(
+                    methodChannelResult = result,
+                    cipher,
+                    promptInfo,
+                    options,
+                    onSuccess = {
+                        cb(cipher)
+                    },
+                    onError = resultError,
+                )
             }
 
             when (call.method) {
@@ -302,11 +310,21 @@ class BiometricStoragePlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
     }
 
     private inline fun worker(
+        methodChannelResult: Result,
         @UiThread crossinline onError: ErrorCallback,
         @WorkerThread crossinline cb: () -> Unit
     ) = executor.submit {
         try {
             cb()
+        } catch (e: MigrationRequiredException) {
+            logger.warn(e) { "Migration required during authenticated worker operation" }
+            handler.post {
+                methodChannelResult.error(
+                    "MigrationRequired",
+                    e.message,
+                    e.toCompleteString()
+                )
+            }
         } catch (e: Throwable) {
             logger.error(e) { "Error while calling worker callback. This must not happen." }
             handler.post {
@@ -343,11 +361,12 @@ class BiometricStoragePlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
 
     @UiThread
     private fun authenticate(
+        methodChannelResult: Result,
         cipher: Cipher?,
         promptInfo: AndroidPromptInfo,
         options: InitOptions,
         @WorkerThread onSuccess: (cipher: Cipher?) -> Unit,
-        onError: ErrorCallback
+        onError: ErrorCallback,
     ) {
         logger.trace {"authenticate()" }
         val activity = attachedActivity ?: return run {
@@ -375,9 +394,11 @@ class BiometricStoragePlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
                 }
 
                 @WorkerThread
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    logger.trace { "onAuthenticationSucceeded($result)" }
-                    worker(onError) { onSuccess(result.cryptoObject?.cipher) }
+                override fun onAuthenticationSucceeded(authResult: BiometricPrompt.AuthenticationResult) {
+                    logger.trace { "onAuthenticationSucceeded($authResult)" }
+                    worker(methodChannelResult, onError) {
+                        onSuccess(authResult.cryptoObject?.cipher)
+                    }
                 }
 
                 override fun onAuthenticationFailed() {

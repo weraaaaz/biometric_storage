@@ -240,7 +240,17 @@ class BiometricStorageFile {
     var item: CFTypeRef?
     
     let status = SecItemCopyMatching(query as CFDictionary, &item)
-    guard status != errSecItemNotFound else {
+    if status == errSecItemNotFound {
+      if initOptions.authenticationRequired && initOptions.darwinBiometricOnly {
+        result(
+          storageError(
+            "MigrationRequired",
+            "Error while retrieving item: \(status) (errSecItemNotFound) for biometric-protected storage.",
+            nil
+          )
+        )
+        return
+      }
       result(nil)
       return
     }
@@ -319,6 +329,8 @@ class BiometricStorageFile {
     switch status {
     case errSecUserCanceled:
       code = "AuthError:UserCanceled"
+    case errSecAuthFailed:
+      code = "MigrationRequired"
     default:
       code = "SecurityError"
     }

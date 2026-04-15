@@ -50,12 +50,14 @@ enum AuthExceptionCode {
   unknown,
   timeout,
   linuxAppArmorDenied,
+  migrationRequired,
 }
 
 const _authErrorCodeMapping = {
   'AuthError:UserCanceled': AuthExceptionCode.userCanceled,
   'AuthError:Canceled': AuthExceptionCode.canceled,
   'AuthError:Timeout': AuthExceptionCode.timeout,
+  'AuthError:MigrationRequired': AuthExceptionCode.migrationRequired,
 };
 
 class BiometricStorageException implements Exception {
@@ -411,6 +413,15 @@ class MethodChannelBiometricStorage extends BiometricStorage {
               'Error during plugin operation (details: ${error.details})',
               error,
               stackTrace);
+          if (error.code == 'MigrationRequired') {
+            return Future<T>.error(
+              AuthException(
+                AuthExceptionCode.migrationRequired,
+                'MigrationRequired: ${error.message ?? ''}',
+              ),
+              stackTrace,
+            );
+          }
           if (error.code.startsWith('AuthError:')) {
             return Future<T>.error(
               AuthException(
