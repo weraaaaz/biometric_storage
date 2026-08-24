@@ -37,6 +37,9 @@
 build/
 android/.idea
 
+.build/
+.swiftpm/
+
 .flutter-plugins-dependencies
 example/android/app/_debug-full-r8-config.txt
 
